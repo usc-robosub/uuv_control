@@ -82,25 +82,20 @@ class ThrusterManager:
         listener = tf2_ros.TransformListener(tf_buffer)
         tf_trans_ned_to_enu = None
 
-        # Try to find transform between the ENU and NED base frames without
-        # injecting the robot namespace. Use what is given in the config.
         try:
-            base_cfg = str(self.config.get('base_link', 'base_link'))
-            if 'base_link_ned' in base_cfg:
-                base_enu = base_cfg.replace('_ned', '')
-                base_ned = base_cfg
+            if self.namespace != '':
+                target = '{}base_link'.format(self.namespace)
+                target = target[1::]
+                source = '{}base_link_ned'.format(self.namespace)
             else:
-                base_enu = base_cfg
-                base_ned = base_cfg + '_ned'
-
-            # tf2 uses frame ids without a leading slash
-            target = base_enu.lstrip('/')
-            source = base_ned.lstrip('/')
+                target = 'base_link'
+                source = 'base_link_ned'
+            source = source[1::]
             tf_trans_ned_to_enu = tf_buffer.lookup_transform(
                 target, source, rospy.Time(), rospy.Duration(1))
         except Exception as e:
-            rospy.loginfo('No transform found between {} and {} (namespace {}), message={}'.format(
-                base_enu, base_ned, self.namespace, e))
+            rospy.loginfo('No transform found between base_link and base_link_ned'
+                  ' for vehicle {}, message={}'.format(self.namespace, e))
             self.base_link_ned_to_enu = None
 
         if tf_trans_ned_to_enu is not None:
@@ -224,8 +219,7 @@ class ThrusterManager:
         # Small margin to make sure we get thruster frames via tf
         now = rospy.Time.now() + rospy.Duration(0.2)
 
-        # Use the provided base_link directly (no namespace prefixing)
-        base = self.config['base_link']
+        base = self.namespace + self.config['base_link']
 
         self.thrusters = list()
 
@@ -248,8 +242,8 @@ class ThrusterManager:
         sleep(0.1)
 
         for i in range(self.MAX_THRUSTERS):
-            # Use the provided thruster frame base directly (no namespace prefixing)
-            frame = self.config['thruster_frame_base'] + str(i)
+            frame = self.namespace + \
+                self.config['thruster_frame_base'] + str(i)
             try:
                 # try to get thruster pose with respect to base frame via tf
                 rospy.loginfo('transform: ' + base + ' -> ' + frame)
@@ -261,29 +255,15 @@ class ThrusterManager:
                 topic = self.config['thruster_topic_prefix'] + str(i) + \
                     self.config['thruster_topic_suffix']
 
-                # If using robot_description, try to resolve the thrust axis
-                # without relying on namespace prefixing.
-                thrust_axis = None
-                if self.use_robot_descr:
-                    # Try several key variants to match parsed URDF link names
-                    candidates = [frame]
-                    if not frame.startswith('/'):
-                        candidates.append('/' + frame)
-                    if self.namespace:
-                        ns_frame = '{}{}'.format(self.namespace, frame)
-                        candidates.append(ns_frame)
-                        if not ns_frame.startswith('/'):
-                            candidates.append('/' + ns_frame)
-                    for key in candidates:
-                        if key in self.axes:
-                            thrust_axis = self.axes[key]
-                            break
+                # If not using robot_description, thrust_axis=None which will
+                # result in the thrust axis being the x-axis,i.e. (1,0,0)
+                thrust_axis = None if not self.use_robot_descr else self.axes[frame]
 
                 if equal_thrusters:
                     params = self.config['conversion_fcn_params']
                     thruster = Thruster.create_thruster(
                         self.config['conversion_fcn'],
-                        i, topic, pos, quat, thrust_axis, **params)
+                        i, topic, pos, quat, self.axes[frame], **params)
                 else:
                     if idx_thruster_model >= len(self.config['conversion_fcn']):
                         raise rospy.ROSException('Number of thrusters found and '
@@ -292,7 +272,7 @@ class ThrusterManager:
                     conv_fcn = self.config['conversion_fcn'][idx_thruster_model]
                     thruster = Thruster.create_thruster(
                         conv_fcn,
-                        i, topic, pos, quat, thrust_axis,
+                        i, topic, pos, quat, self.axes[frame],
                         **params)
                     idx_thruster_model += 1
                 if thruster is None:
